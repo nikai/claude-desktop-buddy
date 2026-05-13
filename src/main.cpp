@@ -955,20 +955,31 @@ void drawHUD() {
 }
 
 void setup() {
-  // M5Unified auto-detects the board (StickC Plus or StickS3) and brings
-  // up display, IMU, speaker, RTC, and power class. No need for the
-  // separate Imu.Init / Beep.begin calls the M5StickCPlus library wanted.
+  // StickS3 power-on timing: the M5PM1 PMIC and BMI270 IMU take real time
+  // after the 3.3V rail comes up before they're I2C-responsive. If
+  // M5Unified probes too early, board detection partly succeeds (display
+  // works) but IMU init silently fails — and the first M5.Imu.getAccelData
+  // call in loop() then faults. 200ms was empirically not enough on this
+  // hardware; 1.5s gives generous margin and also lets `pio device
+  // monitor` reconnect via USB-CDC after a reflash, catching boot logs.
+  Serial.begin(115200);
+  delay(1500);
+  Serial.println("[boot] 1: pre M5.begin");
+
   auto cfg = M5.config();
   M5.begin(cfg);
+  Serial.printf("[boot] 2: M5.begin done, board=%d\n", (int)M5.getBoard());
+
   M5.Lcd.setRotation(0);
-  // StickS3's AW8737 amp is much louder than the StickC Plus piezo —
-  // setVolume(0..255). 80 is a comfortable indoor level on StickS3 and
-  // also fine on StickC Plus.
   M5.Speaker.setVolume(80);
+  Serial.println("[boot] 3: display + speaker configured");
+
   startBt();
+  Serial.println("[boot] 4: BLE up");
+
 #ifdef BUDDY_HAS_LED
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
+  digitalWrite(LED_PIN, HIGH);
 #endif
   applyBrightness();
   lastInteractMs = millis();
@@ -976,16 +987,20 @@ void setup() {
   settingsLoad();
   petNameLoad();
   buddyInit();
+  Serial.println("[boot] 5: NVS + buddy init done");
 
-  // BLE stays always-on; s.bt is stored as a preference only.
   spr.createSprite(W, H);
-  characterInit(nullptr);  // scan /characters/ for whatever is installed
+  Serial.printf("[boot] 6: sprite created, free heap=%u\n", ESP.getFreeHeap());
+  characterInit(nullptr);
   gifAvailable = characterLoaded();
+  Serial.printf("[boot] 7: characterInit done, gifAvailable=%d\n", (int)gifAvailable);
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
   // so a fresh install lands on the GIF). With no GIF installed, 0xFF falls
   // through to buddyInit()'s clamped default.
   buddyMode = !(gifAvailable && speciesIdxLoad() == SPECIES_GIF);
   applyDisplayMode();
+  Serial.printf("[boot] 8: pre splash, buddyMode=%d species=%u\n",
+                (int)buddyMode, (unsigned)buddySpeciesIdx());
 
   {
     const Palette& p = characterPalette();
@@ -1009,7 +1024,7 @@ void setup() {
     delay(1800);
   }
 
-  Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+  Serial.printf("[boot] 9: setup complete, buddy=%s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
 }
 
 void loop() {
