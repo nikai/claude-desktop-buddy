@@ -1294,9 +1294,30 @@ void loop() {
   // in M5Unified, so it needs its own cleanup path). Also clears
   // swallowBtnA so that long-press-to-wake doesn't leak swallow into
   // the next press cycle.
+  static bool btnAEarlyFired = false;
   if (M5.BtnA.wasReleasedAfterHold()) {
     btnALong = false;
     swallowBtnA = false;
+    btnAEarlyFired = false;
+  }
+
+  // Short-click EARLY-FIRE for non-AC contexts: in menu / settings /
+  // reset / approval / PET / INFO / clocking, the user expects A press
+  // to take effect instantly, NOT after the ~600ms click-decision
+  // window. AC double-click is only meaningful in the clean main-screen
+  // context, so we delay there. Everywhere else we fire on release
+  // immediately and mark the click as consumed so the later
+  // wasDecideClickCount event is a no-op.
+  if (M5.BtnA.wasReleased() && !btnALong && !swallowBtnA && !btnAEarlyFired) {
+    bool inAcCandidateCtx = (displayMode == DISP_NORMAL && !clockingNow
+                             && !inPrompt
+                             && !menuOpen && !settingsOpen && !resetOpen);
+    if (!inAcCandidateCtx) {
+      handleBtnAShortClick(inPrompt);
+      btnAEarlyFired = true;
+      // Consume the click snapshot too — we've handled this press.
+      clickPromptValid = false;
+    }
   }
 
   // BtnA click-count decision (short click / double / triple — hold
@@ -1306,10 +1327,17 @@ void loop() {
     bool wasInPromptAtClick = clickPromptValid && clickInPrompt;
     bool promptChanged      = (strcmp(clickPromptId, tama.promptId) != 0);
     bool dropSequence       = clickDropOnDecide || promptChanged;
+    bool earlyHandled       = btnAEarlyFired;
     clickPromptValid  = false;
     clickDropOnDecide = false;
+    btnAEarlyFired    = false;
 
-    if (dropSequence) {
+    if (earlyHandled) {
+      // The click was already fired immediately in the wasReleased
+      // block above (non-AC context). Drop the count-decision event
+      // so we don't re-fire.
+      swallowBtnA = false;
+    } else if (dropSequence) {
       // A new/different prompt arrived during the click-decision window
       // (~600ms). Discard the pending click(s) — they were aimed at a
       // different UI state than what's currently on screen.
@@ -1380,10 +1408,15 @@ void loop() {
       // (intending approve) then BtnB (changing mind to deny) would
       // first send "deny" here, then ~600ms later replay the queued
       // BtnA as "approve" — sending two conflicting permission cmds.
-      // (The wasDecideClickCount branch above also re-checks
-      // responseSent before replaying, but invalidating the snapshot
-      // here is cleaner and avoids relying on that second guard.)
-      clickPromptValid = false;
+      //
+      // Set BOTH flags: clearing clickPromptValid alone wouldn't
+      // suppress the upcoming wasDecideClickCount event (which would
+      // see no snapshot and fall through to the "not in prompt"
+      // branch, potentially triggering AC double-click on the next
+      // render frame). Setting clickDropOnDecide guarantees the
+      // entire pending click sequence is dropped at decision time.
+      clickPromptValid  = false;
+      clickDropOnDecide = true;
 #endif
     } else if (resetOpen) {
       beep(2400, 30);
