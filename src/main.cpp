@@ -416,7 +416,17 @@ static const char* const MON[] = {
 };
 static const char* const DOW[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 
-static uint8_t clockDow() { return _clkDt.weekDay % 7; }
+// m5::rtc_date_t default-constructs weekDay=-1 (sentinel for "not set");
+// also any failed I2C RTC read leaves a negative weekDay. Both cases
+// would index DOW[] out of bounds (signed %7 keeps the negative sign,
+// then the cast to uint8_t makes it 255). Clamp to 0 so DOW[] always
+// returns a valid string; the clock face simply shows "Sun" when the
+// RTC hasn't been synced yet, which is harmless.
+static uint8_t clockDow() {
+  int8_t wd = _clkDt.weekDay;
+  if (wd < 0 || wd > 6) return 0;
+  return (uint8_t)wd;
+}
 static void drawClock() {
   const Palette& p = characterPalette();
   char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.hours, _clkTm.minutes);
