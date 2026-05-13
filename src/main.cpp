@@ -4,6 +4,12 @@
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"
+#ifdef BUDDY_HAS_HITACHI_AC
+  #include "hitachi_ac_remote.h"
+  #ifdef BUDDY_IR_RECORDER
+    #include "ir_recorder.h"
+  #endif
+#endif
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
 
@@ -47,6 +53,23 @@ bool    menuOpen    = false;
 uint8_t menuSel     = 0;
 uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
 bool    btnALong    = false;
+
+#ifdef BUDDY_HAS_HITACHI_AC
+// AC double-click toast: drawAcToast() renders this in the bottom row for
+// `acToastUntil - millis()` ms. Rendered unconditionally (not through
+// drawHUD which is gated by settings().hud), so it survives the user
+// turning transcript off.
+static const char* acToastText  = nullptr;
+static uint32_t    acToastUntil = 0;
+// Click-time prompt snapshot for the double-click → AC trigger. Defined
+// here at file scope so the prompt-arrival block in loop() can also
+// touch them (belt-and-suspenders: drop the entire click sequence if a
+// new prompt arrives mid-decision).
+static char clickPromptId[40]   = "";
+static bool clickInPrompt       = false;
+static bool clickPromptValid    = false;
+static bool clickDropOnDecide   = false;
+#endif
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
 uint8_t displayMode = DISP_NORMAL;
@@ -964,6 +987,25 @@ void drawHUD() {
   }
 }
 
+#ifdef BUDDY_HAS_HITACHI_AC
+// Bottom-row 1-second toast for the AC double-click. Rendered
+// unconditionally before pushSprite (not via drawHUD which is gated on
+// settings().hud) so the user can leave transcript off and still see
+// the AC ON/OFF confirmation. Approval UI gets priority — toast is
+// suppressed while a permission prompt is pending.
+static void drawAcToast() {
+  if (!acToastText || (int32_t)(millis() - acToastUntil) >= 0) return;
+  if (tama.promptId[0]) return;
+  const Palette& p = characterPalette();
+  const int LH = 8;
+  spr.fillRect(0, H - LH - 4, W, LH + 4, p.bg);
+  spr.setTextColor(p.text, p.bg);
+  spr.setTextSize(1);
+  spr.setCursor(4, H - LH - 2);
+  spr.print(acToastText);
+}
+#endif
+
 void setup() {
   // StickS3 power-on timing: the M5PM1 PMIC and BMI270 IMU take real time
   // after the 3.3V rail comes up before they're I2C-responsive. If
@@ -983,6 +1025,16 @@ void setup() {
   M5.Lcd.setRotation(0);
   M5.Speaker.setVolume(80);
   Serial.println("[boot] 3: display + speaker configured");
+
+#ifdef BUDDY_HAS_HITACHI_AC
+  // EXT_5V on for StickS3 IR transceiver. M5Unified's default
+  // _msecHold=500ms is both the click-decision window and the hold
+  // entry; the existing menu uses pressedFor(600). Aligning hold thresh
+  // to 600 avoids the 500–600ms "gray zone" where a press would be
+  // neither a click nor a menu open.
+  M5.Power.setExtOutput(true);
+  M5.BtnA.setHoldThresh(600);
+#endif
 
   startBt();
   Serial.println("[boot] 4: BLE up");
@@ -1011,6 +1063,15 @@ void setup() {
   applyDisplayMode();
   Serial.printf("[boot] 8: pre splash, buddyMode=%d species=%u\n",
                 (int)buddyMode, (unsigned)buddySpeciesIdx());
+
+#ifdef BUDDY_HAS_HITACHI_AC
+  #ifdef BUDDY_IR_RECORDER
+    // Recorder env: dump raw HITACHI frames to Serial, then sit. Never
+    // returns — loop() and the rest of setup() are not reached.
+    irRecorderRun();
+  #endif
+  hitachiAcInit();
+#endif
 
   {
     const Palette& p = characterPalette();
@@ -1043,6 +1104,27 @@ void loop() {
   // (the old M5.Beep was a software square-wave generator that did).
   t++;
   uint32_t now = millis();
+
+#ifdef BUDDY_HAS_HITACHI_AC
+  // Click-time prompt snapshot for the BtnA double-click → AC trigger.
+  // Must happen BEFORE dataPoll() so a new prompt arriving in the same
+  // loop iteration can't retroactively flip our view of "was the user
+  // in approval when they clicked". clickDropOnDecide is set by the
+  // prompt-arrival block below to invalidate the entire click sequence
+  // if a prompt lands mid-decision.
+  if (M5.BtnA.wasClicked() && !clickDropOnDecide) {
+    if (!clickPromptValid) {
+      strncpy(clickPromptId, tama.promptId, sizeof(clickPromptId) - 1);
+      clickPromptId[sizeof(clickPromptId) - 1] = 0;
+      // Capture the full in-prompt bool, not just promptId != "" — once
+      // user has approved, responseSent=true and promptId may still be
+      // set briefly before desktop clears it; a follow-up click in that
+      // window must not be replayed as another approval.
+      clickInPrompt    = (tama.promptId[0] != 0) && !responseSent;
+      clickPromptValid = true;
+    }
+  }
+#endif
 
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
@@ -1081,6 +1163,14 @@ void loop() {
     strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId)-1);
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
+#ifdef BUDDY_HAS_HITACHI_AC
+    // Any prompt change (new prompt OR existing prompt cleared) invalidates
+    // pending BtnA click sequence. Without this, a user mid-double-click on
+    // the main screen could have the second click re-snapshot the new
+    // prompt and accidentally approve it.
+    clickPromptValid  = false;
+    clickDropOnDecide = true;
+#endif
     if (tama.promptId[0]) {
       promptArrivedMs = millis();
       wake();
@@ -1134,36 +1224,112 @@ void loop() {
     }
     Serial.println(menuOpen ? "menu open" : "menu close");
   }
+
+  // The BtnA short-click action body, factored out so it can be (a) the
+  // single trigger on StickC Plus (#else branch below), and (b) replayed
+  // N times on StickS3 in the wasDecideClickCount path. inPrompt is
+  // passed explicitly because the StickS3 path uses a snapshot from the
+  // moment of the click (not the current value at decision time).
+  auto handleBtnAShortClick = [&](bool wasInPrompt) {
+    if (wasInPrompt) {
+      char cmd[96];
+      snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
+      sendCmd(cmd);
+      responseSent = true;
+      uint32_t tookS = (millis() - promptArrivedMs) / 1000;
+      statsOnApproval(tookS);
+      beep(2400, 60);
+      if (tookS < 5) triggerOneShot(P_HEART, 2000);
+    } else if (resetOpen) {
+      beep(1800, 30);
+      resetSel = (resetSel + 1) % RESET_N;
+      resetConfirmIdx = 0xFF;
+    } else if (settingsOpen) {
+      beep(1800, 30);
+      settingsSel = (settingsSel + 1) % SETTINGS_N;
+    } else if (menuOpen) {
+      beep(1800, 30);
+      menuSel = (menuSel + 1) % MENU_N;
+    } else {
+      beep(1800, 30);
+      displayMode = (displayMode + 1) % DISP_COUNT;
+      applyDisplayMode();
+    }
+  };
+
+#ifdef BUDDY_HAS_HITACHI_AC
+  // StickS3: clocking is computed later in loop (after button handlers)
+  // by the existing rendering pipeline. To gate the AC trigger against
+  // the charging-clock view, we need `_onUsb` and `dataRtcValid()` to
+  // reflect current state. Force a refresh now — clockRefreshRtc has a
+  // 1Hz internal throttle so this second call is cheap.
+  clockRefreshRtc();
+  bool clockingNow = (displayMode == DISP_NORMAL
+                     && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
+                     && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
+                     && dataRtcValid() && _onUsb);
+
+  // BtnA hold release (hold→release does NOT produce a click_count event
+  // in M5Unified, so it needs its own cleanup path). Also clears
+  // swallowBtnA so that long-press-to-wake doesn't leak swallow into
+  // the next press cycle.
+  if (M5.BtnA.wasReleasedAfterHold()) {
+    btnALong = false;
+    swallowBtnA = false;
+  }
+
+  // BtnA click-count decision (short click / double / triple — hold
+  // releases don't reach here).
+  if (M5.BtnA.wasDecideClickCount()) {
+    uint8_t n = M5.BtnA.getClickCount();
+    bool wasInPromptAtClick = clickPromptValid && clickInPrompt;
+    bool promptChanged      = (strcmp(clickPromptId, tama.promptId) != 0);
+    bool dropSequence       = clickDropOnDecide || promptChanged;
+    clickPromptValid  = false;
+    clickDropOnDecide = false;
+
+    if (dropSequence) {
+      // A new/different prompt arrived during the click-decision window
+      // (~600ms). Discard the pending click(s) — they were aimed at a
+      // different UI state than what's currently on screen.
+      Serial.println("[btn] dropped pending click(s): prompt changed during decision window");
+      swallowBtnA = false;
+    } else if (!swallowBtnA) {
+      bool isAcCtx = (displayMode == DISP_NORMAL && !clockingNow
+                      && !wasInPromptAtClick
+                      && !menuOpen && !settingsOpen && !resetOpen
+                      && !btnALong);
+      if (n == 2 && isAcCtx) {
+        // Main-screen double-click → toggle HITACHI AC. IR module is pure
+        // logic; UI feedback (beep + toast + serial log) is here.
+        bool newState = hitachiAcToggleAndSend();
+        beep(2000, 60);
+        acToastText  = newState ? "AC ON  ->" : "AC OFF ->";
+        acToastUntil = millis() + 1000;
+      } else {
+        // Non-AC context: replay the short-click action N times so
+        // existing behavior in PET/INFO/menu/settings is preserved.
+        // Exception: in-prompt — at most one approval, additional clicks
+        // dropped (avoid duplicate permission sends).
+        uint8_t replayN = wasInPromptAtClick ? 1 : n;
+        for (uint8_t i = 0; i < replayN; i++) handleBtnAShortClick(wasInPromptAtClick);
+      }
+      swallowBtnA = false;
+    } else {
+      swallowBtnA = false;
+    }
+  }
+#else
+  // StickC Plus (and other non-AC builds): original wasReleased() path,
+  // byte-identical behavior to pre-AC code.
   if (M5.BtnA.wasReleased()) {
     if (!btnALong && !swallowBtnA) {
-      if (inPrompt) {
-        char cmd[96];
-        snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
-        sendCmd(cmd);
-        responseSent = true;
-        uint32_t tookS = (millis() - promptArrivedMs) / 1000;
-        statsOnApproval(tookS);
-        beep(2400, 60);
-        if (tookS < 5) triggerOneShot(P_HEART, 2000);
-      } else if (resetOpen) {
-        beep(1800, 30);
-        resetSel = (resetSel + 1) % RESET_N;
-        resetConfirmIdx = 0xFF;
-      } else if (settingsOpen) {
-        beep(1800, 30);
-        settingsSel = (settingsSel + 1) % SETTINGS_N;
-      } else if (menuOpen) {
-        beep(1800, 30);
-        menuSel = (menuSel + 1) % MENU_N;
-      } else {
-        beep(1800, 30);
-        displayMode = (displayMode + 1) % DISP_COUNT;
-        applyDisplayMode();
-      }
+      handleBtnAShortClick(inPrompt);
     }
     btnALong = false;
     swallowBtnA = false;
   }
+#endif
 
   // BtnB: pet → heart
   if (M5.BtnB.wasPressed()) {
@@ -1286,6 +1452,9 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
+#ifdef BUDDY_HAS_HITACHI_AC
+    drawAcToast();   // bottom-row overlay, unconditional (survives HUD off)
+#endif
     spr.pushSprite(0, 0);
   }
 
