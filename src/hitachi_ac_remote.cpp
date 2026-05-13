@@ -168,13 +168,22 @@ static void configureFrames(bool on) {
 static void sendAllVariantsBitBang(bool on) {
   Serial.printf("[ir] HITACHI: bit-banging 5 variants (%s)...\n", on ? "ON" : "OFF");
 
-  // Reclaim GPIO46 from M5Unified's speaker driver / boot Power-Hold.
+  // Reclaim GPIO46 from M5Unified's speaker driver / boot Power-Hold,
+  // and drive it LOW **before** powering the IR rail. M5.begin()
+  // leaves GPIO46 high; if EXT_5V is enabled while the pin is still
+  // high, the IR LED emits DC light continuously — drains battery and
+  // floods the receiver with reflected noise. Order matters:
+  //   1) Speaker.end() — release M5Unified's claim on GPIO46
+  //   2) gpio_reset_pin — wipe pinMode / matrix bindings
+  //   3) pinMode + digitalWrite LOW — guarantee LED is dark
+  //   4) setExtOutput(true) — now safe to bring up the rail
+  //   5) settle delay
   M5.Speaker.end();
   gpio_reset_pin(GPIO_NUM_46);
-  M5.Power.setExtOutput(true);
-  delay(50);
   pinMode(GPIO_NUM_46, OUTPUT);
   digitalWrite(GPIO_NUM_46, LOW);
+  M5.Power.setExtOutput(true);
+  delay(50);
 
   configureFrames(on);
 
@@ -201,25 +210,28 @@ static void sendAllVariantsBitBang(bool on) {
   sendHitachiBitBang(ac_v296.getRaw(), kHitachiAc296StateLength, TIMING_AC,  /*lsb_first=*/true);
   Serial.println("[ir]   sent: HITACHI_AC296 (bit-bang, LSB-first)");
 
+  // Park GPIO46 LOW and turn the IR rail back off, so the LED doesn't
+  // sit there emitting DC light while idle.
   digitalWrite(GPIO_NUM_46, LOW);
+  M5.Power.setExtOutput(false);
 
   // Restore speaker so beep() works
   M5.Speaker.begin();
   M5.Speaker.setVolume(80);
-  Serial.println("[ir] HITACHI: bit-bang done, speaker restored");
+  Serial.println("[ir] HITACHI: bit-bang done, EXT_5V off, speaker restored");
 }
 
 void hitachiAcInit() {
-  M5.Power.setExtOutput(true);
-  delay(50);
-  bool extOn  = M5.Power.getExtOutput();
-  int  boardN = (int)M5.getBoard();
+  // **Do not** enable EXT_5V here. EXT_5V is enabled only inside
+  // sendAllVariantsBitBang, after GPIO46 has been driven LOW. Boot-time
+  // EXT_5V enable would leave the IR LED emitting DC light all the time
+  // because M5.begin() leaves GPIO46 driven HIGH.
+  int boardN = (int)M5.getBoard();
   const int expectedBoard = (int)m5::board_t::board_M5StickS3;
-  Serial.printf("[ir] EXT_5V check: M5.getBoard()=%d (StickS3 expected=%d, match=%s), "
-                "M5.Power.getExtOutput()=%d\n",
+  Serial.printf("[ir] init: M5.getBoard()=%d (StickS3 expected=%d, match=%s), "
+                "EXT_5V will be toggled per-send (idle off)\n",
                 boardN, expectedBoard,
-                boardN == expectedBoard ? "YES" : "NO",
-                (int)extOn);
+                boardN == expectedBoard ? "YES" : "NO");
 
   // **Do NOT call .begin() on the variant instances.** We only use them
   // as state-byte generators (via getRaw()) — actual transmission goes

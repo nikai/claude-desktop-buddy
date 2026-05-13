@@ -1043,12 +1043,17 @@ void setup() {
   Serial.println("[boot] 3: display + speaker configured");
 
 #ifdef BUDDY_HAS_HITACHI_AC
-  // EXT_5V on for StickS3 IR transceiver. M5Unified's default
-  // _msecHold=500ms is both the click-decision window and the hold
-  // entry; the existing menu uses pressedFor(600). Aligning hold thresh
-  // to 600 avoids the 500–600ms "gray zone" where a press would be
-  // neither a click nor a menu open.
-  M5.Power.setExtOutput(true);
+  // **Do NOT** enable EXT_5V here. M5.begin() leaves GPIO46 driven
+  // HIGH (M5Unified's Power-Hold init); if we power the IR rail with
+  // GPIO46 still high, the LED would emit DC light from boot — drains
+  // battery and floods the room with IR noise, jamming both our own
+  // future bit-bang and any nearby legitimate remote signals. EXT_5V
+  // is enabled inside the send path only, after GPIO46 is driven LOW.
+  //
+  // M5Unified default _msecHold=500ms is both the click-decision window
+  // and the hold entry. Existing menu uses pressedFor(600). Aligning
+  // hold thresh to 600 closes the 500-600ms "gray zone" where a press
+  // would be neither a click nor a menu open.
   M5.BtnA.setHoldThresh(600);
 #endif
 
