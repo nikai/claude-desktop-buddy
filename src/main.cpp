@@ -1001,7 +1001,8 @@ static bool acToastVisible = false;
 static void drawAcToast() {
   const bool active = acToastText
                       && (int32_t)(millis() - acToastUntil) < 0
-                      && !tama.promptId[0];
+                      && !tama.promptId[0]
+                      && !blePasskey();
   if (active) {
     const Palette& p = characterPalette();
     const int LH = 8;
@@ -1375,6 +1376,7 @@ void loop() {
       // we're showing the "sent..." trailer anyway).
       bool inAcCandidateCtx = (displayMode == DISP_NORMAL && !clockingNow
                                && !inPrompt && !tama.promptId[0]
+                               && !blePasskey()
                                && !menuOpen && !settingsOpen && !resetOpen);
       if (!inAcCandidateCtx) {
         handleBtnAShortClick(inPrompt);
@@ -1434,6 +1436,7 @@ void loop() {
       // Toggling AC while the overlay is on screen is confusing.
       bool isAcCtx = (displayMode == DISP_NORMAL && !clockingNow
                       && !wasInPromptAtClick && !tama.promptId[0]
+                      && !blePasskey()
                       && !menuOpen && !settingsOpen && !resetOpen
                       && !btnALong);
       if (n == 2 && isAcCtx) {
