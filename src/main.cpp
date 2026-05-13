@@ -1,4 +1,4 @@
-#include <M5StickCPlus.h>
+#include "m5_compat.h"
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
@@ -23,7 +23,9 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
+#ifdef BUDDY_HAS_LED
+const int LED_PIN = 10;          // red LED, active-low (StickC Plus only)
+#endif
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -94,12 +96,14 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+// M5Unified setBrightness uses 0-255; original AXP ScreenBreath used 20-100
+// (~5-25%). Map brightLevel 0..4 onto a comparable visible range.
+static void applyBrightness() { M5.Display.setBrightness(50 + brightLevel * 50); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    M5.Display.wakeup();
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -109,7 +113,7 @@ static void wake() {
 bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) M5.Speaker.tone(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -305,7 +309,7 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    case 1: M5.Power.powerOff(); break;
     case 2:
     case 3:
       menuOpen = false;
@@ -349,16 +353,20 @@ static uint8_t paintedOrient = 0;
 // RTC and IMU share an I2C bus. Reading the RTC at 60fps starves the IMU
 // reads in clockUpdateOrient — orientation detection gets noisy. Cache the
 // time once per second; mood logic and drawClock both read from here.
-static RTC_TimeTypeDef _clkTm;
-static RTC_DateTypeDef _clkDt;
+static m5::rtc_time_t _clkTm;
+static m5::rtc_date_t _clkDt;
 uint32_t               _clkLastRead = 0;   // zeroed by data.h on time-sync
 static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-  _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
-  M5.Rtc.GetTime(&_clkTm);
-  M5.Rtc.GetDate(&_clkDt);
+  // M5Unified getVBUSVoltage returns mV (int16_t). On boards without a
+  // VBUS sense rail (e.g. StickS3 M5PM1) this can return 0 — treat as
+  // "no USB", which means the clock face never auto-engages on those
+  // boards. The menu and the rest of the UI are unaffected.
+  _onUsb = M5.Power.getVBUSVoltage() > 4000;
+  M5.Rtc.getTime(&_clkTm);
+  M5.Rtc.getDate(&_clkDt);
 }
 
 static void clockUpdateOrient() {
@@ -408,13 +416,23 @@ static const char* const MON[] = {
 };
 static const char* const DOW[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 
-static uint8_t clockDow() { return _clkDt.WeekDay % 7; }
+// m5::rtc_date_t default-constructs weekDay=-1 (sentinel for "not set");
+// also any failed I2C RTC read leaves a negative weekDay. Both cases
+// would index DOW[] out of bounds (signed %7 keeps the negative sign,
+// then the cast to uint8_t makes it 255). Clamp to 0 so DOW[] always
+// returns a valid string; the clock face simply shows "Sun" when the
+// RTC hasn't been synced yet, which is harmless.
+static uint8_t clockDow() {
+  int8_t wd = _clkDt.weekDay;
+  if (wd < 0 || wd > 6) return 0;
+  return (uint8_t)wd;
+}
 static void drawClock() {
   const Palette& p = characterPalette();
-  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.Hours, _clkTm.Minutes);
-  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.Seconds);
-  uint8_t mi = (_clkDt.Month >= 1 && _clkDt.Month <= 12) ? _clkDt.Month - 1 : 0;
-  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.Date);
+  char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.hours, _clkTm.minutes);
+  char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.seconds);
+  uint8_t mi = (_clkDt.month >= 1 && _clkDt.month <= 12) ? _clkDt.month - 1 : 0;
+  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.date);
 
   if (clockOrient == 0) {
     paintedOrient = 0;
@@ -439,10 +457,10 @@ static void drawClock() {
 
   // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
   // for nothing. Gate on the second changing (or full repaint).
-  if (repaint || _clkTm.Seconds != lastSec) {
-    lastSec = _clkTm.Seconds;
-    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
-    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.Seconds);
+  if (repaint || _clkTm.seconds != lastSec) {
+    lastSec = _clkTm.seconds;
+    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.date);
+    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.seconds);
     M5.Lcd.setTextDatum(MC_DATUM);
     M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
     M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
@@ -593,9 +611,13 @@ void drawInfo() {
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
 
-    int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
-    int iBat_mA = (int)M5.Axp.GetBatCurrent();
-    int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
+    // M5Unified Power class returns int16_t mV / mA directly.
+    // On boards whose PMIC doesn't report current (e.g. StickS3 M5PM1)
+    // getBatteryCurrent returns 0 — the "charging" / "full" heuristics
+    // below degrade gracefully (just shows "usb" or "battery").
+    int vBat_mV = M5.Power.getBatteryVoltage();
+    int iBat_mA = M5.Power.getBatteryCurrent();
+    int vBus_mV = M5.Power.getVBUSVoltage();
     int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     bool usb = vBus_mV > 4000;
@@ -627,7 +649,14 @@ void drawInfo() {
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
-    ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+    // AXP192 had an internal die-temp sensor; M5PM1 (StickS3) doesn't expose
+    // one. M5Unified has no portable temperature API, so we drop the line on
+    // boards without it. Use the chip-temp ESP-IDF API as a best-effort
+    // fallback so the field stays informative on StickS3.
+    {
+      float tc = (float)temperatureRead();
+      if (!isnan(tc) && tc > -40 && tc < 125) ln("  temp     %dC", (int)tc);
+    }
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -936,29 +965,52 @@ void drawHUD() {
 }
 
 void setup() {
-  M5.begin();
+  // StickS3 power-on timing: the M5PM1 PMIC and BMI270 IMU take real time
+  // after the 3.3V rail comes up before they're I2C-responsive. If
+  // M5Unified probes too early, board detection partly succeeds (display
+  // works) but IMU init silently fails — and the first M5.Imu.getAccelData
+  // call in loop() then faults. 200ms was empirically not enough on this
+  // hardware; 1.5s gives generous margin and also lets `pio device
+  // monitor` reconnect via USB-CDC after a reflash, catching boot logs.
+  Serial.begin(115200);
+  delay(1500);
+  Serial.println("[boot] 1: pre M5.begin");
+
+  auto cfg = M5.config();
+  M5.begin(cfg);
+  Serial.printf("[boot] 2: M5.begin done, board=%d\n", (int)M5.getBoard());
+
   M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  M5.Speaker.setVolume(80);
+  Serial.println("[boot] 3: display + speaker configured");
+
   startBt();
+  Serial.println("[boot] 4: BLE up");
+
+#ifdef BUDDY_HAS_LED
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
+  digitalWrite(LED_PIN, HIGH);
+#endif
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
   petNameLoad();
   buddyInit();
+  Serial.println("[boot] 5: NVS + buddy init done");
 
-  // BLE stays always-on; s.bt is stored as a preference only.
   spr.createSprite(W, H);
-  characterInit(nullptr);  // scan /characters/ for whatever is installed
+  Serial.printf("[boot] 6: sprite created, free heap=%u\n", ESP.getFreeHeap());
+  characterInit(nullptr);
   gifAvailable = characterLoaded();
+  Serial.printf("[boot] 7: characterInit done, gifAvailable=%d\n", (int)gifAvailable);
   // species NVS: 0..N-1 = ASCII species, 0xFF = use GIF (also the default,
   // so a fresh install lands on the GIF). With no GIF installed, 0xFF falls
   // through to buddyInit()'s clamped default.
   buddyMode = !(gifAvailable && speciesIdxLoad() == SPECIES_GIF);
   applyDisplayMode();
+  Serial.printf("[boot] 8: pre splash, buddyMode=%d species=%u\n",
+                (int)buddyMode, (unsigned)buddySpeciesIdx());
 
   {
     const Palette& p = characterPalette();
@@ -982,12 +1034,13 @@ void setup() {
     delay(1800);
   }
 
-  Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+  Serial.printf("[boot] 9: setup complete, buddy=%s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
 }
 
 void loop() {
   M5.update();
-  M5.Beep.update();
+  // M5.Speaker plays asynchronously via I2S; no per-loop pump needed
+  // (the old M5.Beep was a software square-wave generator that did).
   t++;
   uint32_t now = millis();
 
@@ -1001,12 +1054,16 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
-  // LED: pulse on attention, otherwise off
+#ifdef BUDDY_HAS_LED
+  // LED: pulse on attention, otherwise off (StickC Plus only — StickS3
+  // has no discrete indicator LED, the on-screen pet animation conveys
+  // attention state instead).
   if (activeState == P_ATTENTION && settings().led) {
     digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
   } else {
     digitalWrite(LED_PIN, HIGH);
   }
+#endif
 
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
@@ -1051,13 +1108,16 @@ void loop() {
     wake();
   }
 
-  // AXP power button (left side): short-press toggles screen off.
-  // Long-press (6s) still powers off the device via AXP hardware.
-  if (M5.Axp.GetBtnPress() == 0x02) {
+  // Power button: short-press toggles screen off. On StickC Plus this is
+  // the dedicated AXP power button; on StickS3 there is no separate power
+  // button (the M5PM1 power key is wired together with KEY1/BtnA), so
+  // M5.BtnPWR.wasClicked() simply never fires there. Hardware long-press
+  // power-off is handled by the PMIC directly.
+  if (M5.BtnPWR.wasClicked()) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      M5.Display.sleep();
       screenOff = true;
     }
   }
@@ -1170,7 +1230,7 @@ void loop() {
     bool weekend = (dow == 0 || dow == 6);
     bool friday  = (dow == 5);
 
-    uint8_t h = _clkTm.Hours;
+    uint8_t h = _clkTm.hours;
     if (h >= 1 && h < 7)             activeState = P_SLEEP;
     else if (weekend)                activeState = (now/8000 % 6 == 0) ? P_HEART : P_SLEEP;
     else if (h < 9)                  activeState = (now/6000 % 4 == 0) ? P_IDLE  : P_SLEEP;
@@ -1243,7 +1303,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-    M5.Axp.ScreenBreath(8);
+    M5.Display.setBrightness(20);   // very dim while napping
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1257,7 +1317,7 @@ void loop() {
   // No auto-off on USB power — clock face wants to stay visible while charging.
   if (!screenOff && !inPrompt && !_onUsb
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+    M5.Display.sleep();
     screenOff = true;
   }
 
