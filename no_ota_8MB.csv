@@ -1,0 +1,16 @@
+# Custom 8MB no-OTA partition table for M5Stack StickS3 builds.
+# Matches the spirit of the upstream `no_ota.csv` (single app slot, big
+# data partition) but sized for the StickS3's 8MB flash. Gives 3MB app
+# (current firmware is ~1.3MB, leaves generous headroom for new species
+# / future code growth) and ~4.9MB LittleFS — well above the ~1.8MB
+# character pack ceiling enforced by xfer.h's char_begin space check, so
+# any pack the upstream tooling produces fits.
+#
+# Total: 0x800000 (8MB).
+#
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x300000,
+spiffs,   data, spiffs,  0x310000,0x4E0000,
+coredump, data, coredump,0x7F0000,0x10000,
