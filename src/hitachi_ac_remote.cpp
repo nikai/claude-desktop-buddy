@@ -92,6 +92,35 @@ static void sendVariantAc296(bool on) {
   ac_v296.send();
 }
 
+// =========================================================================
+// DIAGNOSTIC: bit-banged 38kHz IR carrier. Tests the IR LED hardware on
+// GPIO46 without any RMT library. Output ~50ms of modulated 38kHz, then
+// 50ms off, repeat. A phone camera pointing at the StickS3 top should
+// see 10 obvious purple flashes over ~1 second. If yes → IR LED on
+// GPIO46 works; library RMT path is the bug. If no → hardware fault,
+// must use external IR Unit.
+// =========================================================================
+static void diagBitBangIr(uint32_t mark_us = 50000, uint32_t space_us = 50000,
+                          uint8_t cycles = 10) {
+  pinMode(GPIO_NUM_46, OUTPUT);
+  // 38kHz period = 26.3us. Half cycle = 13us. Use 13us high / 13us low.
+  const uint32_t HALF_US = 13;
+  for (uint8_t c = 0; c < cycles; c++) {
+    uint32_t end_mark = micros() + mark_us;
+    while ((int32_t)(end_mark - micros()) > 0) {
+      digitalWrite(GPIO_NUM_46, HIGH);
+      delayMicroseconds(HALF_US);
+      digitalWrite(GPIO_NUM_46, LOW);
+      delayMicroseconds(HALF_US);
+    }
+    delayMicroseconds(space_us);
+  }
+  digitalWrite(GPIO_NUM_46, LOW);
+}
+// =========================================================================
+// End diagnostic bit-bang scaffold.
+// =========================================================================
+
 static void sendAllVariants(bool on) {
   Serial.printf("[ir] HITACHI: spraying 5 variants (%s)...\n", on ? "ON" : "OFF");
 
@@ -114,22 +143,12 @@ static void sendAllVariants(bool on) {
   M5.Power.setExtOutput(true);
   delay(20);
 
-  // DIAGNOSTIC strobe: before RMT-modulated IR, slowly toggle GPIO46
-  // at 2Hz x 5 cycles manually. If GPIO46 is wired to an IR LED, a
-  // phone camera pointed at the stick top will see 5 obvious purple
-  // flashes ~500ms apart. If the camera sees nothing, GPIO46 isn't
-  // the IR LED on this StickS3 unit — modulated sends below will be
-  // invisible too regardless of protocol variant.
-  pinMode(GPIO_NUM_46, OUTPUT);
-  Serial.println("[ir] DIAG: strobing GPIO46 at 2Hz x 5 — check phone camera now");
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(GPIO_NUM_46, HIGH);
-    delay(250);
-    digitalWrite(GPIO_NUM_46, LOW);
-    delay(250);
-  }
-  Serial.println("[ir] DIAG: strobe done, proceeding to library IR sends");
-  gpio_reset_pin(GPIO_NUM_46);
+  // DIAGNOSTIC: bit-bang 38kHz directly on GPIO46 for ~1 second.
+  // Library-independent. If a phone camera shows 10 distinct purple
+  // flashes during this window, GPIO46 is wired to a functional IR LED.
+  Serial.println("[ir] DIAG: bit-banging 38kHz on GPIO46 for ~1s — watch camera now");
+  diagBitBangIr();
+  Serial.println("[ir] DIAG: bit-bang done, proceeding to library HITACHI sends");
 
   sendVariantAc(on);    Serial.println("[ir]   sent: HITACHI_AC");    delay(50);
   sendVariantAc1(on);   Serial.println("[ir]   sent: HITACHI_AC1");   delay(50);
