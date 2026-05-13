@@ -23,6 +23,7 @@
 #include <M5Unified.h>
 #include <Preferences.h>
 #include <ir_Hitachi.h>
+#include <driver/gpio.h>
 
 constexpr uint8_t HITACHI_IR_TX_PIN = 46;
 
@@ -94,13 +95,22 @@ static void sendVariantAc296(bool on) {
 static void sendAllVariants(bool on) {
   Serial.printf("[ir] HITACHI: spraying 5 variants (%s)...\n", on ? "ON" : "OFF");
 
-  // Per M5Stack support (and StickS3 IR docs), the speaker amplifier
-  // shares peripherals with the IR / M5PM1 path and must be off for IR
-  // to work cleanly. Disable speaker → send all frames → re-enable so
-  // beep() still works for the next button press.
+  // **GPIO46 is a SHARED PIN** on StickS3: it's both the speaker
+  // amplifier enable AND the IR LED transmit line (see M5Unified.cpp's
+  // `gpio_num_t spk_en_pin = GPIO_NUM_46;`). The speaker driver holds
+  // this pin HIGH while audio is enabled — that's a continuous DC
+  // assertion, not the 38kHz modulation our IR receiver / AC expects.
+  // To send IR we must:
+  //   1) End the speaker so M5Unified releases its claim on the pin
+  //   2) gpio_reset_pin to wipe pinMode / RMT-matrix bindings from
+  //      whoever touched it previously (M5Unified.hpp:337-340 also
+  //      calls gpio_hi(46) at M5.begin() time — for Capsule/Dial/DinMeter
+  //      power-hold, but the same unconditional code runs on StickS3)
+  //   3) Refresh EXT_5V (the IR LED's anode rail)
+  //   4) Settle delay so M5PM1 register write actually lands before TX
+  // After all variants are sent we restore speaker for beep() feedback.
   M5.Speaker.end();
-  // Belt-and-suspenders: refresh EXT_5V right before sending, in case
-  // anything toggled it since hitachiAcInit().
+  gpio_reset_pin(GPIO_NUM_46);
   M5.Power.setExtOutput(true);
   delay(20);
 
