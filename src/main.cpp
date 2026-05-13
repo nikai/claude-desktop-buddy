@@ -1328,7 +1328,20 @@ void loop() {
   // in menus advances selection on every press as it did pre-refactor.
   // btnAEarlyFired stays true after the first early-fire so the eventual
   // decide event ignores the whole consumed sequence.
-  if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !swallowBtnA) {
+  // Consume the wake-swallow on this release even if we don't early-fire.
+  // The original (pre-refactor) wasReleased path cleared swallowBtnA at
+  // its end after a wake-tap, so the user's NEXT press worked normally.
+  // The click-count refactor only cleared swallowBtnA inside
+  // wasDecideClickCount, which fires ~600ms later — during that window
+  // a second tap got added to the click count and then dropped along
+  // with the swallow flag. Clear here so wake-tap only consumes its own
+  // release cycle.
+  if (M5.BtnA.wasReleased() && swallowBtnA) {
+    swallowBtnA = false;
+    btnAEarlyFired = true;          // make later decide event a no-op too
+    clickPromptValid = false;
+  }
+  if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !swallowBtnA && !btnAEarlyFired) {
     // If the pending click sequence has been invalidated (prompt arrived
     // mid-double-click, or user denied via BtnB), don't early-fire either
     // — just consume the release silently. Otherwise click 2 of a queued
