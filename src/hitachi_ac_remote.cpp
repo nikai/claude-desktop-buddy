@@ -93,12 +93,27 @@ static void sendVariantAc296(bool on) {
 
 static void sendAllVariants(bool on) {
   Serial.printf("[ir] HITACHI: spraying 5 variants (%s)...\n", on ? "ON" : "OFF");
+
+  // Per M5Stack support (and StickS3 IR docs), the speaker amplifier
+  // shares peripherals with the IR / M5PM1 path and must be off for IR
+  // to work cleanly. Disable speaker → send all frames → re-enable so
+  // beep() still works for the next button press.
+  M5.Speaker.end();
+  // Belt-and-suspenders: refresh EXT_5V right before sending, in case
+  // anything toggled it since hitachiAcInit().
+  M5.Power.setExtOutput(true);
+  delay(20);
+
   sendVariantAc(on);    Serial.println("[ir]   sent: HITACHI_AC");    delay(50);
   sendVariantAc1(on);   Serial.println("[ir]   sent: HITACHI_AC1");   delay(50);
   sendVariantAc264(on); Serial.println("[ir]   sent: HITACHI_AC264"); delay(50);
   sendVariantAc344(on); Serial.println("[ir]   sent: HITACHI_AC344"); delay(50);
   sendVariantAc296(on); Serial.println("[ir]   sent: HITACHI_AC296");
-  Serial.println("[ir] HITACHI: all variants sent");
+
+  // Speaker back on for subsequent beep() calls.
+  M5.Speaker.begin();
+  M5.Speaker.setVolume(80);
+  Serial.println("[ir] HITACHI: all variants sent, speaker re-enabled");
 }
 
 void hitachiAcInit() {
