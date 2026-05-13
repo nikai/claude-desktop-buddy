@@ -1290,16 +1290,12 @@ void loop() {
                      && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
                      && dataRtcValid() && _onUsb);
 
-  // BtnA hold release (hold→release does NOT produce a click_count event
-  // in M5Unified, so it needs its own cleanup path). Also clears
-  // swallowBtnA so that long-press-to-wake doesn't leak swallow into
-  // the next press cycle.
+  // Snapshot wasReleasedAfterHold BEFORE we clear btnALong — they fire on
+  // the same frame as wasReleased, so checking `btnALong` later would see
+  // a stale-clean state and treat the hold-release as an early-fire short
+  // click (e.g. opening the menu and then immediately advancing menuSel).
   static bool btnAEarlyFired = false;
-  if (M5.BtnA.wasReleasedAfterHold()) {
-    btnALong = false;
-    swallowBtnA = false;
-    btnAEarlyFired = false;
-  }
+  bool btnAHoldRelease = M5.BtnA.wasReleasedAfterHold();
 
   // Short-click EARLY-FIRE for non-AC contexts: in menu / settings /
   // reset / approval / PET / INFO / clocking, the user expects A press
@@ -1308,7 +1304,12 @@ void loop() {
   // context, so we delay there. Everywhere else we fire on release
   // immediately and mark the click as consumed so the later
   // wasDecideClickCount event is a no-op.
-  if (M5.BtnA.wasReleased() && !btnALong && !swallowBtnA && !btnAEarlyFired) {
+  //
+  // Each release fires (no `!btnAEarlyFired` gate) so rapid multi-click
+  // in menus advances selection on every press as it did pre-refactor.
+  // btnAEarlyFired stays true after the first early-fire so the eventual
+  // decide event ignores the whole consumed sequence.
+  if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !swallowBtnA) {
     bool inAcCandidateCtx = (displayMode == DISP_NORMAL && !clockingNow
                              && !inPrompt
                              && !menuOpen && !settingsOpen && !resetOpen);
@@ -1318,6 +1319,14 @@ void loop() {
       // Consume the click snapshot too — we've handled this press.
       clickPromptValid = false;
     }
+  }
+
+  // Now clean up after hold-release. Order: snapshot above → short-click
+  // early-fire (which uses btnALong) → hold-release cleanup here.
+  if (btnAHoldRelease) {
+    btnALong = false;
+    swallowBtnA = false;
+    btnAEarlyFired = false;
   }
 
   // BtnA click-count decision (short click / double / triple — hold
@@ -1409,14 +1418,14 @@ void loop() {
       // first send "deny" here, then ~600ms later replay the queued
       // BtnA as "approve" — sending two conflicting permission cmds.
       //
-      // Set BOTH flags: clearing clickPromptValid alone wouldn't
-      // suppress the upcoming wasDecideClickCount event (which would
-      // see no snapshot and fall through to the "not in prompt"
-      // branch, potentially triggering AC double-click on the next
-      // render frame). Setting clickDropOnDecide guarantees the
-      // entire pending click sequence is dropped at decision time.
-      clickPromptValid  = false;
-      clickDropOnDecide = true;
+      // Only set drop flag if there IS a pending click sequence — same
+      // gating as prompt-arrival. Setting clickDropOnDecide=true when
+      // no sequence is pending leaves a poison flag that swallows the
+      // next legitimate click after the prompt clears.
+      if (clickPromptValid) {
+        clickDropOnDecide = true;
+      }
+      clickPromptValid = false;
 #endif
     } else if (resetOpen) {
       beep(2400, 30);
