@@ -1334,14 +1334,17 @@ void loop() {
   // The click-count refactor only cleared swallowBtnA inside
   // wasDecideClickCount, which fires ~600ms later — during that window
   // a second tap got added to the click count and then dropped along
-  // with the swallow flag. Clear here so wake-tap only consumes its own
-  // release cycle.
-  if (M5.BtnA.wasReleased() && swallowBtnA) {
+  // with the swallow flag. Use a frame-LOCAL `thisReleaseWasWake` flag
+  // so the wake block prevents the early-fire block from re-running on
+  // the SAME release (same frame), but it does NOT carry across frames
+  // (which would block subsequent quick taps in menu / approval).
+  bool thisReleaseWasWake = M5.BtnA.wasReleased() && swallowBtnA;
+  if (thisReleaseWasWake) {
     swallowBtnA = false;
     btnAEarlyFired = true;          // make later decide event a no-op too
     clickPromptValid = false;
   }
-  if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !swallowBtnA && !btnAEarlyFired) {
+  if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !thisReleaseWasWake) {
     // If the pending click sequence has been invalidated (prompt arrived
     // mid-double-click, or user denied via BtnB), don't early-fire either
     // — just consume the release silently. Otherwise click 2 of a queued
