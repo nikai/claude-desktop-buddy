@@ -1353,6 +1353,19 @@ void loop() {
     // never intended to acknowledge.
     if (clickDropOnDecide) {
       btnAEarlyFired = true;       // make the eventual decide event a no-op too
+    } else if (btnAEarlyFired) {
+      // Earlier release in this same ~600ms click-count window was
+      // consumed (typically a wake-tap, or an earlier early-fire in a
+      // non-AC context). The user's "next" press should take effect
+      // immediately, NOT get queued for AC double-click — because the
+      // decision event for this whole sequence is already marked
+      // earlyHandled and will drop everything. Fire now so the press
+      // actually does something. Note that AC double-click is
+      // inherently a paired-clicks-only feature; after a wake/menu/etc.
+      // consumption the user can't trigger AC by pairing this one
+      // remaining click with a future one anyway.
+      handleBtnAShortClick(inPrompt);
+      clickPromptValid = false;
     } else {
       // Pending-prompt UI is still visible while desktop hasn't cleared
       // promptId, even after we've sent a response. AC double-click must
