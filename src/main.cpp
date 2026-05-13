@@ -1310,8 +1310,14 @@ void loop() {
   // btnAEarlyFired stays true after the first early-fire so the eventual
   // decide event ignores the whole consumed sequence.
   if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !swallowBtnA) {
+    // Pending-prompt UI is still visible while desktop hasn't cleared
+    // promptId, even after we've sent a response. AC double-click must
+    // not fire on the approval overlay, so treat any visible prompt
+    // (promptId set, even if responseSent) as NON-AC context to force
+    // early-fire (handleBtnAShortClick is a no-op when !inPrompt and
+    // we're showing the "sent..." trailer anyway).
     bool inAcCandidateCtx = (displayMode == DISP_NORMAL && !clockingNow
-                             && !inPrompt
+                             && !inPrompt && !tama.promptId[0]
                              && !menuOpen && !settingsOpen && !resetOpen);
     if (!inAcCandidateCtx) {
       handleBtnAShortClick(inPrompt);
@@ -1353,8 +1359,12 @@ void loop() {
       Serial.println("[btn] dropped pending click(s): prompt changed during decision window");
       swallowBtnA = false;
     } else if (!swallowBtnA) {
+      // AC trigger also gated on current `tama.promptId[0]` — even if the
+      // user wasn't in a prompt when they first clicked, an approval may
+      // still be visible (responseSent=true, promptId not yet cleared).
+      // Toggling AC while the overlay is on screen is confusing.
       bool isAcCtx = (displayMode == DISP_NORMAL && !clockingNow
-                      && !wasInPromptAtClick
+                      && !wasInPromptAtClick && !tama.promptId[0]
                       && !menuOpen && !settingsOpen && !resetOpen
                       && !btnALong);
       if (n == 2 && isAcCtx) {
