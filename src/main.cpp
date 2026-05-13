@@ -6,9 +6,6 @@
 #include "buddy.h"
 #ifdef BUDDY_HAS_HITACHI_AC
   #include "hitachi_ac_remote.h"
-  #ifdef BUDDY_IR_RECORDER
-    #include "ir_recorder.h"
-  #endif
 #endif
 
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
@@ -1065,11 +1062,6 @@ void setup() {
                 (int)buddyMode, (unsigned)buddySpeciesIdx());
 
 #ifdef BUDDY_HAS_HITACHI_AC
-  #ifdef BUDDY_IR_RECORDER
-    // Recorder env: dump raw HITACHI frames to Serial, then sit. Never
-    // returns — loop() and the rest of setup() are not reached.
-    irRecorderRun();
-  #endif
   hitachiAcInit();
 #endif
 

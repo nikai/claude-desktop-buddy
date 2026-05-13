@@ -1,47 +1,35 @@
 // HITACHI AC remote — see hitachi_ac_remote.h.
 //
-// The whole translation unit is gated behind BUDDY_HAS_HITACHI_AC because
-// the repository's `build_src_filter = +<*>` includes every .cpp in every
-// env, but StickC Plus env doesn't depend on IRremoteESP8266 (it's a
-// StickS3-only feature). Without this guard, the StickC Plus build would
-// fail to find IRremoteESP8266.h.
+// **No recording**: this file uses IRremoteESP8266's HITACHI AC protocol
+// encoder (`IRHitachiAc`) to synthesize full-state IR frames directly,
+// bypassing the broken-on-StickS3 internal IR receiver entirely. HITACHI
+// AC remotes don't use a "power toggle" code — every press is a full
+// state frame (power + mode + temp + fan + ...). We pick sensible
+// MVP defaults: cool / 25°C / auto fan, and flip just the power bit.
+//
+// HITACHI variant: defaults to `IRHitachiAc` (the 28-byte / 224-bit
+// "classic" variant — most common across HITACHI residential models).
+// If your AC doesn't respond, the library also ships `IRHitachiAc1`,
+// `IRHitachiAc2`, `IRHitachiAc3`, `IRHitachiAc264`, `IRHitachiAc344`
+// for newer variants. Swap the class below and rebuild.
 
 #ifdef BUDDY_HAS_HITACHI_AC
 
 #include "hitachi_ac_remote.h"
-#include "hitachi_ac_codes.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <Preferences.h>
-#include <IRsend.h>
+#include <ir_Hitachi.h>
 
-// StickS3 internal IR transmitter is on GPIO46. The pin coexists with
-// M5Unified's gpio_hi(46) in M5.begin() (Power Hold for Capsule / Dial /
-// DinMeter) — hardware compatibility for HITACHI-length raw frames must
-// be verified by Phase A.5 in the plan (~450-symbol stress test).
 constexpr uint8_t HITACHI_IR_TX_PIN = 46;
 
-static IRsend     irsend(HITACHI_IR_TX_PIN);
-static Preferences prefs;
-static bool       lastState = false;   // last persisted ac_state: false=OFF, true=ON
+static IRHitachiAc  ac(HITACHI_IR_TX_PIN);
+static Preferences  prefs;
+static bool         lastState = false;
 
-// NVS namespace shared with stats/settings/owner/petname (see stats.h).
-// Direct use of `Preferences` (not stats.h::_prefs) — stats.h is
-// header-static and would dupe state if a second TU included it.
 static const char* kPrefsNamespace = "buddy";
 static const char* kPrefsKey       = "hitachi_ac";
-
-static bool sendRawSafe(const uint16_t* buf, size_t len, const char* label) {
-  if (len == 0 || buf == nullptr) {
-    Serial.printf("[ir] HITACHI %s: codes not recorded yet (len=0), skipping send\n", label);
-    return false;
-  }
-  irsend.sendRaw(buf, len, HITACHI_AC_CARRIER_HZ);
-  Serial.printf("[ir] HITACHI sent: %s (%u symbols @ %u kHz)\n",
-                label, (unsigned)len, (unsigned)HITACHI_AC_CARRIER_HZ);
-  return true;
-}
 
 static void persistState(bool s) {
   lastState = s;
@@ -50,32 +38,48 @@ static void persistState(bool s) {
   prefs.end();
 }
 
+// Sensible MVP defaults baked into every frame. HITACHI is stateful, so
+// each send fully overrides the AC's current settings — picking cool /
+// 25°C / auto fan makes the "AC ON" press behave predictably regardless
+// of the AC's prior state.
+static void configureFrame(bool on) {
+  if (on) ac.on();
+  else    ac.off();
+  ac.setMode(kHitachiAcCool);
+  ac.setTemp(25);
+  ac.setFan(kHitachiAcFanAuto);
+  ac.setSwingVertical(false);
+  ac.setSwingHorizontal(false);
+}
+
 void hitachiAcInit() {
-  // EXT_5V on. On StickS3 the M5PM1 power IC routes the IR transmitter
-  // through the external rail; on other boards this is a no-op.
+  // EXT_5V on so the internal IR LED's supply rail is energized.
   M5.Power.setExtOutput(true);
 
-  irsend.begin();
+  ac.begin();
 
   prefs.begin(kPrefsNamespace, /*readonly=*/true);
   lastState = prefs.getBool(kPrefsKey, false);
   prefs.end();
 
-  Serial.printf("[ir] hitachiAcInit done, last ac_state=%s, on_len=%u off_len=%u\n",
+  Serial.printf("[ir] hitachiAcInit done, last ac_state=%s, protocol=HITACHI_AC %d-byte\n",
                 lastState ? "ON" : "OFF",
-                (unsigned)HITACHI_AC_POWER_ON_LEN,
-                (unsigned)HITACHI_AC_POWER_OFF_LEN);
+                kHitachiAcStateLength);
 }
 
 bool hitachiAcSendOn() {
-  bool sent = sendRawSafe(HITACHI_AC_POWER_ON_RAW, HITACHI_AC_POWER_ON_LEN, "ON");
-  if (sent) persistState(true);
-  return true;   // contract: returns the intended new state, regardless of len==0 placeholder
+  configureFrame(true);
+  ac.send();
+  Serial.println("[ir] HITACHI sent: ON  (cool / 25 C / auto fan)");
+  persistState(true);
+  return true;
 }
 
 bool hitachiAcSendOff() {
-  bool sent = sendRawSafe(HITACHI_AC_POWER_OFF_RAW, HITACHI_AC_POWER_OFF_LEN, "OFF");
-  if (sent) persistState(false);
+  configureFrame(false);
+  ac.send();
+  Serial.println("[ir] HITACHI sent: OFF");
+  persistState(false);
   return false;
 }
 
