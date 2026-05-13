@@ -28,14 +28,17 @@
 // StickS3 internal IR receiver GPIO. RMT-driven via IRremoteESP8266.
 constexpr uint8_t HITACHI_IR_RX_PIN = 42;
 
-// HITACHI AC frames can run up to ~700 raw symbols (AC344 variant). 1024
-// gives ample headroom; if a real capture comes near this ceiling, bump
-// to 2048 and reflash.
-constexpr uint16_t kRecorderBufSize    = 1024;
-// Timeout (ms) deciding "no more pulses, frame complete". 50 ms is the
-// IRremoteESP8266 default for AC-class protocols. Named to avoid
-// colliding with IRrecv.h's own `kTimeoutMs`.
-constexpr uint8_t  kRecorderTimeoutMs  = 50;
+// HITACHI AC frames can run up to ~700 raw symbols (AC344 variant), AND
+// HITACHI remotes typically transmit the same frame 2-3 times per button
+// press as redundancy. 2048 covers up to ~3 long-variant repeats; if a
+// real capture still hits this ceiling, bump to 4096 and reflash.
+constexpr uint16_t kRecorderBufSize    = 2048;
+// Inter-pulse timeout (ms) deciding "no more pulses, frame complete".
+// HITACHI's between-repeat gap is around 40-50ms, so 50 ms (library
+// default) tends to concatenate multiple repeats into one giant blob and
+// hide the protocol-detector. 15 ms cleanly separates repeats so the
+// decoder sees a single frame.
+constexpr uint8_t  kRecorderTimeoutMs  = 15;
 
 static IRrecv      irrecv(HITACHI_IR_RX_PIN, kRecorderBufSize, kRecorderTimeoutMs, /*save_buffer=*/true);
 static decode_results results;
