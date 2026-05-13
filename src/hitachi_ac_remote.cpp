@@ -126,10 +126,17 @@ static void configureFrames(bool on) {
   ac_v0.setFan(kHitachiAcFanAuto);
   if (on) ac_v0.on(); else ac_v0.off();    // last → no Button to set, harmless
 
-  // AC1
+  // AC1: stateReset() leaves SwingToggle / SwingV bits set by default.
+  // The library's IRHitachiAc1::send() clears the toggle bits after
+  // transmission so subsequent frames don't keep flipping swing; our
+  // hand bit-bang skips that cleanup. Explicitly clear both swing
+  // states so our power-only frame won't make the AC oscillate its
+  // vertical louvers as a side effect.
   ac_v1.setMode(kHitachiAc1Cool);
   ac_v1.setTemp(25);
   ac_v1.setFan(kHitachiAc1FanAuto);
+  ac_v1.setSwingV(false);
+  ac_v1.setSwingToggle(false);
   ac_v1.setPower(on);
 
   // AC264
