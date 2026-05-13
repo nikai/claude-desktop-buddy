@@ -126,18 +126,25 @@ static void configureFrames(bool on) {
   ac_v0.setFan(kHitachiAcFanAuto);
   if (on) ac_v0.on(); else ac_v0.off();    // last → no Button to set, harmless
 
-  // AC1: stateReset() leaves SwingToggle / SwingV bits set by default.
-  // The library's IRHitachiAc1::send() clears the toggle bits after
-  // transmission so subsequent frames don't keep flipping swing; our
-  // hand bit-bang skips that cleanup. Explicitly clear both swing
-  // states so our power-only frame won't make the AC oscillate its
-  // vertical louvers as a side effect.
+  // AC1: stateReset() leaves SwingToggle / SwingV bits set by default,
+  // and IRHitachiAc1::setPower() ONLY raises the PowerToggle bit when
+  // the new target differs from the object's last-remembered power
+  // state. The library normally clears all toggle bits inside send()
+  // after each transmission — our bit-bang path skips that cleanup,
+  // so consecutive calls with the same target would emit
+  // PowerToggle=false and the AC1 unit would ignore them.
+  //
+  // Pattern: force the object's internal power state to the OPPOSITE
+  // of the target, then call setPower(target) → PowerToggle latches to
+  // 1. Also clear both swing toggles so power-only frames don't have
+  // side effects on louver direction.
   ac_v1.setMode(kHitachiAc1Cool);
   ac_v1.setTemp(25);
   ac_v1.setFan(kHitachiAc1FanAuto);
   ac_v1.setSwingV(false);
   ac_v1.setSwingToggle(false);
-  ac_v1.setPower(on);
+  ac_v1.setPower(!on);    // prime: opposite first
+  ac_v1.setPower(on);     // then target → PowerToggle=true
 
   // AC264
   ac_v264.setMode(kHitachiAc264Cool);
@@ -214,12 +221,21 @@ void hitachiAcInit() {
                 boardN == expectedBoard ? "YES" : "NO",
                 (int)extOn);
 
-  // Library state generators initialization
-  ac_v0.begin();
-  ac_v1.begin();
-  ac_v264.begin();
-  ac_v344.begin();
-  ac_v296.begin();
+  // **Do NOT call .begin() on the variant instances.** We only use them
+  // as state-byte generators (via getRaw()) — actual transmission goes
+  // through our bit-bang path. Calling begin() invokes IRsend.begin()
+  // under the hood, which immediately pinMode(46, OUTPUT) and drives
+  // the pin to idle level, snatching the shared GPIO46 from
+  // M5Unified's speaker amp permanently at boot. That would mute beep()
+  // for the rest of the session — and may even prevent the bit-bang
+  // from reaching the LED if RMT keeps the pin in a non-GPIO state.
+  // The state-byte API (setMode/setTemp/setFan/setPower/getRaw) does
+  // not require IRsend to be initialized.
+  (void)ac_v0;
+  (void)ac_v1;
+  (void)ac_v264;
+  (void)ac_v344;
+  (void)ac_v296;
 
   prefs.begin(kPrefsNamespace, /*readonly=*/true);
   lastState = prefs.getBool(kPrefsKey, false);

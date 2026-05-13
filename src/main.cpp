@@ -1310,20 +1310,30 @@ void loop() {
   // btnAEarlyFired stays true after the first early-fire so the eventual
   // decide event ignores the whole consumed sequence.
   if (M5.BtnA.wasReleased() && !btnAHoldRelease && !btnALong && !swallowBtnA) {
-    // Pending-prompt UI is still visible while desktop hasn't cleared
-    // promptId, even after we've sent a response. AC double-click must
-    // not fire on the approval overlay, so treat any visible prompt
-    // (promptId set, even if responseSent) as NON-AC context to force
-    // early-fire (handleBtnAShortClick is a no-op when !inPrompt and
-    // we're showing the "sent..." trailer anyway).
-    bool inAcCandidateCtx = (displayMode == DISP_NORMAL && !clockingNow
-                             && !inPrompt && !tama.promptId[0]
-                             && !menuOpen && !settingsOpen && !resetOpen);
-    if (!inAcCandidateCtx) {
-      handleBtnAShortClick(inPrompt);
-      btnAEarlyFired = true;
-      // Consume the click snapshot too — we've handled this press.
-      clickPromptValid = false;
+    // If the pending click sequence has been invalidated (prompt arrived
+    // mid-double-click, or user denied via BtnB), don't early-fire either
+    // — just consume the release silently. Otherwise click 2 of a queued
+    // AC double-click would fire handleBtnAShortClick against the NEW
+    // post-prompt context and accidentally approve a permission the user
+    // never intended to acknowledge.
+    if (clickDropOnDecide) {
+      btnAEarlyFired = true;       // make the eventual decide event a no-op too
+    } else {
+      // Pending-prompt UI is still visible while desktop hasn't cleared
+      // promptId, even after we've sent a response. AC double-click must
+      // not fire on the approval overlay, so treat any visible prompt
+      // (promptId set, even if responseSent) as NON-AC context to force
+      // early-fire (handleBtnAShortClick is a no-op when !inPrompt and
+      // we're showing the "sent..." trailer anyway).
+      bool inAcCandidateCtx = (displayMode == DISP_NORMAL && !clockingNow
+                               && !inPrompt && !tama.promptId[0]
+                               && !menuOpen && !settingsOpen && !resetOpen);
+      if (!inAcCandidateCtx) {
+        handleBtnAShortClick(inPrompt);
+        btnAEarlyFired = true;
+        // Consume the click snapshot too — we've handled this press.
+        clickPromptValid = false;
+      }
     }
   }
 
