@@ -88,12 +88,16 @@ static void sendHitachiBitBang(const uint8_t* state, size_t len,
   irSpace(t.gap);
 }
 
-// Protocol timing constants pulled from IRremoteESP8266's ir_Hitachi.cpp
-// (kHitachi*HdrMark / *HdrSpace / *BitMark / *OneSpace / *ZeroSpace / *MinGap).
-static const HitachiTiming TIMING_AC    = { 3300, 1700, 400, 1250, 500, 100000 };
-static const HitachiTiming TIMING_AC1   = { 3400, 3400, 400, 1250, 500, 100000 };
-static const HitachiTiming TIMING_AC424 = { 3416, 1750, 460, 1250, 410, 100000 }; // for 264 / 344
-static const HitachiTiming TIMING_AC296 = { 3416, 1750, 460, 1250, 410, 100000 };
+// Protocol timing constants pulled from IRremoteESP8266's ir_Hitachi.cpp.
+// IMPORTANT (verified against the library's IRsend::sendHitachiAC):
+//   - AC, AC264, AC296, AC344 all share the SAME timing (kHitachiAc*).
+//     They differ only in byte-order (MSB-first for AC/AC1, LSB-first
+//     for AC264/AC296/AC344). The AC424 timing in the library is for a
+//     DIFFERENT protocol (HITACHI_AC424, 53 bytes with leader) which we
+//     do not need to support here.
+//   - AC1 has its own header timing (kHitachiAc1Hdr*) but same bit timing.
+static const HitachiTiming TIMING_AC  = { 3300, 1700, 400, 1250, 500, 100000 };
+static const HitachiTiming TIMING_AC1 = { 3400, 3400, 400, 1250, 500, 100000 };
 
 // =========================================================================
 // Public API
@@ -146,25 +150,28 @@ static void sendAllVariantsBitBang(bool on) {
 
   configureFrames(on);
 
-  // Send each variant once.
-  sendHitachiBitBang(ac_v0.getRaw(),   kHitachiAcStateLength,    TIMING_AC);
-  Serial.println("[ir]   sent: HITACHI_AC (bit-bang)");
+  // Per IRsend::sendHitachiAC source: AC + AC1 are MSB-first per byte,
+  // while AC264 / AC296 / AC344 are LSB-first per byte. All non-AC1
+  // variants share the same TIMING_AC. AC1 alone uses the wider
+  // 3400/3400 header.
+  sendHitachiBitBang(ac_v0.getRaw(),   kHitachiAcStateLength,    TIMING_AC,  /*lsb_first=*/false);
+  Serial.println("[ir]   sent: HITACHI_AC (bit-bang, MSB-first)");
   delay(50);
 
-  sendHitachiBitBang(ac_v1.getRaw(),   kHitachiAc1StateLength,   TIMING_AC1);
-  Serial.println("[ir]   sent: HITACHI_AC1 (bit-bang)");
+  sendHitachiBitBang(ac_v1.getRaw(),   kHitachiAc1StateLength,   TIMING_AC1, /*lsb_first=*/false);
+  Serial.println("[ir]   sent: HITACHI_AC1 (bit-bang, MSB-first)");
   delay(50);
 
-  sendHitachiBitBang(ac_v264.getRaw(), kHitachiAc264StateLength, TIMING_AC424);
-  Serial.println("[ir]   sent: HITACHI_AC264 (bit-bang)");
+  sendHitachiBitBang(ac_v264.getRaw(), kHitachiAc264StateLength, TIMING_AC,  /*lsb_first=*/true);
+  Serial.println("[ir]   sent: HITACHI_AC264 (bit-bang, LSB-first)");
   delay(50);
 
-  sendHitachiBitBang(ac_v344.getRaw(), kHitachiAc344StateLength, TIMING_AC424);
-  Serial.println("[ir]   sent: HITACHI_AC344 (bit-bang)");
+  sendHitachiBitBang(ac_v344.getRaw(), kHitachiAc344StateLength, TIMING_AC,  /*lsb_first=*/true);
+  Serial.println("[ir]   sent: HITACHI_AC344 (bit-bang, LSB-first)");
   delay(50);
 
-  sendHitachiBitBang(ac_v296.getRaw(), kHitachiAc296StateLength, TIMING_AC296);
-  Serial.println("[ir]   sent: HITACHI_AC296 (bit-bang)");
+  sendHitachiBitBang(ac_v296.getRaw(), kHitachiAc296StateLength, TIMING_AC,  /*lsb_first=*/true);
+  Serial.println("[ir]   sent: HITACHI_AC296 (bit-bang, LSB-first)");
 
   digitalWrite(GPIO_NUM_46, LOW);
 
