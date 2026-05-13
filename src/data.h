@@ -78,11 +78,15 @@ static void _applyJson(const char* line, TamaState* out) {
   if (!t.isNull() && t.size() == 2) {
     time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
     struct tm lt; gmtime_r(&local, &lt);
-    m5::rtc_time_t tm = { (int8_t)lt.tm_hour, (int8_t)lt.tm_min, (int8_t)lt.tm_sec };
-    m5::rtc_date_t dt = { (int8_t)lt.tm_wday, (int8_t)(lt.tm_mon + 1),
-                           (int8_t)lt.tm_mday, (int16_t)(lt.tm_year + 1900) };
-    M5.Rtc.setTime(&tm);
-    M5.Rtc.setDate(&dt);
+    // M5Unified provides explicit (const tm&) constructors for both
+    // rtc_time_t and rtc_date_t — use them instead of positional init so
+    // field-order mismatches with the old M5StickCPlus RTC_DateTypeDef
+    // (which was weekDay, month, date, year — opposite end-to-end from
+    // m5::rtc_date_t's year, month, date, weekDay) can't slip back in.
+    m5::rtc_time_t mt(lt);
+    m5::rtc_date_t md(lt);
+    M5.Rtc.setTime(&mt);
+    M5.Rtc.setDate(&md);
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
