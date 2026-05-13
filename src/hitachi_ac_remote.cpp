@@ -102,8 +102,25 @@ static void sendAllVariants(bool on) {
 }
 
 void hitachiAcInit() {
-  // EXT_5V on so the internal IR LED's supply rail is energized.
+  // EXT_5V powers the internal IR TX/RX rail on StickS3 (via M5PM1
+  // register 0x06 bit 3). M5Unified's M5.begin() already calls this with
+  // cfg.output_power (default true), but call it again explicitly +
+  // verify the rail actually came up.
   M5.Power.setExtOutput(true);
+  delay(50);   // let the I2C write to M5PM1 settle
+  bool extOn  = M5.Power.getExtOutput();
+  int  boardN = (int)M5.getBoard();
+  const int expectedBoard = (int)m5::board_t::board_M5StickS3;
+  Serial.printf("[ir] EXT_5V check: M5.getBoard()=%d (StickS3 expected=%d, match=%s), "
+                "M5.Power.getExtOutput()=%d\n",
+                boardN, expectedBoard,
+                boardN == expectedBoard ? "YES" : "NO — setExtOutput is no-op until board detected",
+                (int)extOn);
+  if (!extOn) {
+    Serial.println("[ir] WARNING: EXT_5V is OFF — internal IR TX/RX won't have power. "
+                   "If IR still doesn't work after this is fixed, GPIO46 may not be the actual "
+                   "IR LED on this StickS3.");
+  }
 
   ac_v0.begin();
   ac_v1.begin();
@@ -115,7 +132,7 @@ void hitachiAcInit() {
   lastState = prefs.getBool(kPrefsKey, false);
   prefs.end();
 
-  Serial.printf("[ir] hitachiAcInit done, last ac_state=%s, will spray all 6 HITACHI variants per toggle\n",
+  Serial.printf("[ir] hitachiAcInit done, last ac_state=%s, will spray 5 HITACHI variants per toggle\n",
                 lastState ? "ON" : "OFF");
 }
 
