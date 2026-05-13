@@ -114,6 +114,23 @@ static void sendAllVariants(bool on) {
   M5.Power.setExtOutput(true);
   delay(20);
 
+  // DIAGNOSTIC strobe: before RMT-modulated IR, slowly toggle GPIO46
+  // at 2Hz x 5 cycles manually. If GPIO46 is wired to an IR LED, a
+  // phone camera pointed at the stick top will see 5 obvious purple
+  // flashes ~500ms apart. If the camera sees nothing, GPIO46 isn't
+  // the IR LED on this StickS3 unit — modulated sends below will be
+  // invisible too regardless of protocol variant.
+  pinMode(GPIO_NUM_46, OUTPUT);
+  Serial.println("[ir] DIAG: strobing GPIO46 at 2Hz x 5 — check phone camera now");
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(GPIO_NUM_46, HIGH);
+    delay(250);
+    digitalWrite(GPIO_NUM_46, LOW);
+    delay(250);
+  }
+  Serial.println("[ir] DIAG: strobe done, proceeding to library IR sends");
+  gpio_reset_pin(GPIO_NUM_46);
+
   sendVariantAc(on);    Serial.println("[ir]   sent: HITACHI_AC");    delay(50);
   sendVariantAc1(on);   Serial.println("[ir]   sent: HITACHI_AC1");   delay(50);
   sendVariantAc264(on); Serial.println("[ir]   sent: HITACHI_AC264"); delay(50);
