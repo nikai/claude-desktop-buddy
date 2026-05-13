@@ -990,16 +990,35 @@ void drawHUD() {
 // settings().hud) so the user can leave transcript off and still see
 // the AC ON/OFF confirmation. Approval UI gets priority — toast is
 // suppressed while a permission prompt is pending.
+//
+// **Expiry cleanup**: when HUD is off, the normal animation pipeline
+// repaints only the character region — it does NOT touch the bottom
+// row. So a stale toast can linger on screen indefinitely after expiry
+// until another full repaint happens. Track whether we last drew the
+// toast and do one explicit fillRect right after expiry to wipe the
+// text, then null acToastText so we don't keep wiping every frame.
+static bool acToastVisible = false;
 static void drawAcToast() {
-  if (!acToastText || (int32_t)(millis() - acToastUntil) >= 0) return;
-  if (tama.promptId[0]) return;
-  const Palette& p = characterPalette();
-  const int LH = 8;
-  spr.fillRect(0, H - LH - 4, W, LH + 4, p.bg);
-  spr.setTextColor(p.text, p.bg);
-  spr.setTextSize(1);
-  spr.setCursor(4, H - LH - 2);
-  spr.print(acToastText);
+  const bool active = acToastText
+                      && (int32_t)(millis() - acToastUntil) < 0
+                      && !tama.promptId[0];
+  if (active) {
+    const Palette& p = characterPalette();
+    const int LH = 8;
+    spr.fillRect(0, H - LH - 4, W, LH + 4, p.bg);
+    spr.setTextColor(p.text, p.bg);
+    spr.setTextSize(1);
+    spr.setCursor(4, H - LH - 2);
+    spr.print(acToastText);
+    acToastVisible = true;
+  } else if (acToastVisible) {
+    // First frame after expiry/suppression — wipe the band once.
+    const Palette& p = characterPalette();
+    const int LH = 8;
+    spr.fillRect(0, H - LH - 4, W, LH + 4, p.bg);
+    acToastVisible = false;
+    acToastText = nullptr;
+  }
 }
 #endif
 
@@ -1160,8 +1179,18 @@ void loop() {
     // pending BtnA click sequence. Without this, a user mid-double-click on
     // the main screen could have the second click re-snapshot the new
     // prompt and accidentally approve it.
-    clickPromptValid  = false;
-    clickDropOnDecide = true;
+    //
+    // BUT: only set `clickDropOnDecide` when there's actually a pending
+    // click sequence. Otherwise the flag sticks until the *next* time a
+    // user clicks BtnA, swallowing their first post-prompt click — which
+    // breaks the most common case of "prompt appears → user taps A to
+    // approve". Gating on clickPromptValid keeps the drop semantics
+    // (sequence started before prompt arrived = drop) without poisoning
+    // future clicks (no sequence yet = nothing to drop).
+    if (clickPromptValid) {
+      clickDropOnDecide = true;
+    }
+    clickPromptValid = false;
 #endif
     if (tama.promptId[0]) {
       promptArrivedMs = millis();
@@ -1303,8 +1332,19 @@ void loop() {
         // existing behavior in PET/INFO/menu/settings is preserved.
         // Exception: in-prompt — at most one approval, additional clicks
         // dropped (avoid duplicate permission sends).
-        uint8_t replayN = wasInPromptAtClick ? 1 : n;
-        for (uint8_t i = 0; i < replayN; i++) handleBtnAShortClick(wasInPromptAtClick);
+        //
+        // **Race guard**: if `responseSent` was set in the meantime
+        // (e.g. user mashed BtnB to deny while their earlier BtnA tap
+        // was still inside the click-decision window), DO NOT replay
+        // the BtnA approval — the prompt has already been answered.
+        // Without this check we'd send `permission deny` then
+        // immediately `permission approve` for the same promptId.
+        if (wasInPromptAtClick && responseSent) {
+          Serial.println("[btn] dropped pending BtnA approval: prompt already responded to");
+        } else {
+          uint8_t replayN = wasInPromptAtClick ? 1 : n;
+          for (uint8_t i = 0; i < replayN; i++) handleBtnAShortClick(wasInPromptAtClick);
+        }
       }
       swallowBtnA = false;
     } else {
@@ -1334,6 +1374,17 @@ void loop() {
       responseSent = true;
       statsOnDenial();
       beep(600, 60);
+#ifdef BUDDY_HAS_HITACHI_AC
+      // Cancel any pending BtnA click that's still inside the
+      // click-decision window. Without this, the user pressing BtnA
+      // (intending approve) then BtnB (changing mind to deny) would
+      // first send "deny" here, then ~600ms later replay the queued
+      // BtnA as "approve" — sending two conflicting permission cmds.
+      // (The wasDecideClickCount branch above also re-checks
+      // responseSent before replaying, but invalidating the snapshot
+      // here is cleaner and avoids relying on that second guard.)
+      clickPromptValid = false;
+#endif
     } else if (resetOpen) {
       beep(2400, 30);
       applyReset(resetSel);

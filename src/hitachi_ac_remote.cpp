@@ -110,31 +110,45 @@ static void persistState(bool s) {
 }
 
 static void configureFrames(bool on) {
+  // CRITICAL: IRremoteESP8266's 424-series (AC264 / AC296 / AC344)
+  // encodes a "Button" field in the state. Each setter call rewrites
+  // that field to "the button corresponding to this setter" — setTemp
+  // → TempUp, setFan → FanSpeed, setPower → Power/Mode. The LAST
+  // setter call wins. We want the AC to interpret these frames as a
+  // **power toggle**, so setPower / on() / off() MUST be the final
+  // call. Otherwise the AC sees "TempUp 25C" and ignores power state.
+  // For AC and AC1 (which don't have a Button field) the order is
+  // harmless either way, but we apply the same convention uniformly.
+
   // AC (28-byte)
-  if (on) ac_v0.on(); else ac_v0.off();
   ac_v0.setMode(kHitachiAcCool);
   ac_v0.setTemp(25);
   ac_v0.setFan(kHitachiAcFanAuto);
+  if (on) ac_v0.on(); else ac_v0.off();    // last → no Button to set, harmless
+
   // AC1
-  ac_v1.setPower(on);
   ac_v1.setMode(kHitachiAc1Cool);
   ac_v1.setTemp(25);
   ac_v1.setFan(kHitachiAc1FanAuto);
+  ac_v1.setPower(on);
+
   // AC264
-  if (on) ac_v264.on(); else ac_v264.off();
   ac_v264.setMode(kHitachiAc264Cool);
   ac_v264.setTemp(25);
   ac_v264.setFan(kHitachiAc264FanAuto);
+  if (on) ac_v264.on(); else ac_v264.off();  // last → Button = Power/Mode
+
   // AC344
-  if (on) ac_v344.on(); else ac_v344.off();
   ac_v344.setMode(kHitachiAc344Cool);
   ac_v344.setTemp(25);
   ac_v344.setFan(kHitachiAc344FanAuto);
+  if (on) ac_v344.on(); else ac_v344.off();  // last → Button = Power/Mode
+
   // AC296
-  ac_v296.setPower(on);
   ac_v296.setMode(kHitachiAc296Cool);
   ac_v296.setTemp(25);
   ac_v296.setFan(kHitachiAc296FanAuto);
+  ac_v296.setPower(on);                       // last
 }
 
 static void sendAllVariantsBitBang(bool on) {
