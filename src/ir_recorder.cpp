@@ -69,12 +69,21 @@ static void waitForBtnAClick() {
   }
 }
 
-// Block until IRrecv decodes a frame, then return. Caller owns the
-// receiver and is expected to disableIRIn() afterwards.
+// Block until IRrecv decodes a "real-looking" frame. Filters out noise
+// captures (typical ambient pickup is <50 transitions; real HITACHI is
+// 200+). Discards anything below kMinFrameLen and prints a single dot so
+// the user can see noise is being filtered (not silence).
+constexpr uint16_t kMinFrameLen = 100;
 static void waitForIrFrame() {
   while (true) {
-    M5.update();   // keep button state machine alive in case user wants to abort (future)
-    if (irrecv.decode(&results)) return;
+    M5.update();
+    if (irrecv.decode(&results)) {
+      if (results.rawlen >= kMinFrameLen) return;
+      // Noise — discard and keep listening.
+      Serial.printf("[recorder] discarded noise capture (rawlen=%u, type=%d)\n",
+                    results.rawlen, (int)results.decode_type);
+      irrecv.resume();   // clear & re-arm RMT for next capture
+    }
     delay(2);
   }
 }
@@ -120,6 +129,9 @@ void irRecorderRun() {
   showLine("Aim remote, press", "POWER on remote");
   Serial.println("[recorder] Phase 1: armed. Press POWER on the original remote now.");
   irrecv.enableIRIn();
+  // Drain any noise accumulated since wakeup so the first decode call
+  // doesn't fire on stale ambient IR (sun / monitor / fluorescent bulbs).
+  irrecv.resume();
   waitForIrFrame();
   irrecv.disableIRIn();
   dumpFrame("PHASE 1 / POWER_ON");
@@ -138,6 +150,9 @@ void irRecorderRun() {
   showLine("Press POWER now", "(AC will turn OFF)");
   Serial.println("[recorder] Phase 2: armed. Press POWER on the original remote now.");
   irrecv.enableIRIn();
+  // Drain any noise accumulated since wakeup so the first decode call
+  // doesn't fire on stale ambient IR (sun / monitor / fluorescent bulbs).
+  irrecv.resume();
   waitForIrFrame();
   irrecv.disableIRIn();
   dumpFrame("PHASE 2 / POWER_OFF");
