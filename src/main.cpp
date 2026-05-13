@@ -1035,6 +1035,20 @@ void setup() {
   Serial.println("[boot] 1: pre M5.begin");
 
   auto cfg = M5.config();
+#ifdef BUDDY_HAS_HITACHI_AC
+  // M5.config().output_power defaults to TRUE, which makes M5.begin()
+  // call setExtOutput(true) internally. M5Unified also unconditionally
+  // pulls GPIO46 HIGH on ESP32-S3 (Power-Hold init for Capsule/Dial/
+  // DinMeter). Combining the two would leave the StickS3's internal IR
+  // LED emitting continuous DC light from boot — drains battery and
+  // floods the room with reflected IR that jams any remote receiver.
+  //
+  // Disable EXT_5V here so the rail is off all through boot. The send
+  // path drives GPIO46 LOW, then enables EXT_5V, runs the bit-bang,
+  // then turns the rail back off — IR is only powered during the few
+  // hundred ms of a transmission.
+  cfg.output_power = false;
+#endif
   M5.begin(cfg);
   Serial.printf("[boot] 2: M5.begin done, board=%d\n", (int)M5.getBoard());
 
@@ -1043,13 +1057,13 @@ void setup() {
   Serial.println("[boot] 3: display + speaker configured");
 
 #ifdef BUDDY_HAS_HITACHI_AC
-  // **Do NOT** enable EXT_5V here. M5.begin() leaves GPIO46 driven
-  // HIGH (M5Unified's Power-Hold init); if we power the IR rail with
-  // GPIO46 still high, the LED would emit DC light from boot — drains
-  // battery and floods the room with IR noise, jamming both our own
-  // future bit-bang and any nearby legitimate remote signals. EXT_5V
-  // is enabled inside the send path only, after GPIO46 is driven LOW.
-  //
+  // Belt-and-suspenders: in case any path between M5.begin() and our
+  // first send re-enables EXT_5V, explicitly turn it off and park
+  // GPIO46 LOW so the IR LED is dark at idle.
+  M5.Power.setExtOutput(false);
+  pinMode(GPIO_NUM_46, OUTPUT);
+  digitalWrite(GPIO_NUM_46, LOW);
+
   // M5Unified default _msecHold=500ms is both the click-decision window
   // and the hold entry. Existing menu uses pressedFor(600). Aligning
   // hold thresh to 600 closes the 500-600ms "gray zone" where a press
