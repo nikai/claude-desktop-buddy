@@ -1387,10 +1387,21 @@ void loop() {
 
   // Now clean up after hold-release. Order: snapshot above → short-click
   // early-fire (which uses btnALong) → hold-release cleanup here.
+  //
+  // M5Unified cancels the click-count sequence when a press transitions
+  // into hold state (`_clickCount` is cleared inside Button_Class), so
+  // wasDecideClickCount won't fire for any earlier short-clicks that
+  // ended up paired with this hold. That means clickPromptValid /
+  // clickDropOnDecide left over from those clicks would never be
+  // consumed by the normal decide path — they'd persist as poison
+  // flags until the next prompt arrives or click happens. Wipe all
+  // click-tracking state here so the next interaction starts clean.
   if (btnAHoldRelease) {
     btnALong = false;
     swallowBtnA = false;
     btnAEarlyFired = false;
+    clickPromptValid = false;
+    clickDropOnDecide = false;
   }
 
   // BtnA click-count decision (short click / double / triple — hold
